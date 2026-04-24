@@ -331,3 +331,97 @@ class BaseConnection(abc.ABC):
                 self._condition.notify_all()
 
         asyncio.create_task(notify())
+
+    async def send_raw(
+        self,
+        data: str,
+        *,
+        timeout: float | None = None,
+        expected_prompts: Sequence[str | Pattern[str]] | None = None,
+        validate_prompt: bool = False,
+        validate_output: bool = False,
+    ) -> str | None:
+        """
+        Send raw data and optionally validate that:
+        - a prompt appears, or
+        - some new output appears
+
+        Returns:
+            - matched prompt string if validate_prompt=True and prompt appears
+            - "OUTPUT_RECEIVED" if validate_output=True and any new output appears
+            - None if no validation requested
+        """
+        if validate_prompt and validate_output:
+            raise ValueError(
+                "Use either validate_prompt=True or validate_output=True, not both."
+            )
+
+        await self.ensure_connected()
+        start_pos = len(self._buffer)
+
+        await self._send_raw(data)
+
+        if validate_prompt:
+            patterns = compile_prompt_patterns(
+                list(expected_prompts or self.config.expected_prompts)
+            )
+            prompt = await self._wait_for_patterns(
+                patterns=patterns,
+                timeout=timeout or self.config.prompt_timeout,
+                start_pos=start_pos,
+            )
+            self._last_prompt = prompt
+            return prompt
+
+        if validate_output:
+            await self._wait_for_any_output(
+                timeout=timeout or self.config.prompt_timeout,
+                start_pos=start_pos,
+            )
+            return "OUTPUT_RECEIVED"
+
+        return None
+
+    async def _wait_for_any_output(
+        self,
+        *,
+        timeout: float,
+        start_pos: int,
+    ) -> str:
+        async def waiter() -> str:
+            while True:
+                text = self._buffer[start_pos:]
+                if text:
+                    return text
+                async with self._condition:
+                    await self._condition.wait()
+
+        try:
+            return await asyncio.wait_for(waiter(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            tail = self._buffer[max(0, len(self._buffer) - 800):]
+            raise PromptTimeoutError(
+                f"Timeout waiting for any output on device={self.device_id!r}. "
+                f"Buffer tail={tail!r}"
+            ) from exc
+
+    async def _wait_for_meaningful_output(
+        self,
+        *,
+        timeout: float,
+        start_pos: int,
+        ignore_text: str | None = None,
+    ) -> str:
+        async def waiter() -> str:
+            while True:
+                text = self._buffer[start_pos:]
+                if text:
+                    meaningful = text
+                    if ignore_text:
+                        meaningful = meaningful.replace(ignore_text, "")
+                    if meaningful.strip():
+                        return meaningful
+                async with self._condition:
+                    await self._condition.wait()
+
+        return await asyncio.wait_for(waiter(), timeout=timeout)

@@ -13,8 +13,9 @@ from framework.connections.exceptions import (
     ConnectionClosedError,
     ConnectionOpenError,
     HostKeyError,
+    PromptTimeoutError,
 )
-from framework.models.config import build_host_key_policy
+from framework.models.config import build_host_key_policy, compile_prompt_patterns
 from framework.utils.logging import LOGGER
 from framework.utils.normalization import normalize_output
 
@@ -32,8 +33,71 @@ class SSHConnection(BaseConnection):
     async def open(self) -> None:
         self._closed = False
         self._loop = asyncio.get_running_loop()
+
+        # Establish blocking SSH transport + shell
         await asyncio.to_thread(self._open_blocking)
         self._connected = True
+
+        # Validate that the shell is actually ready and sitting at a prompt.
+        await self._validate_initial_prompt()
+
+    async def _validate_initial_prompt(self) -> None:
+        """
+        After invoke_shell(), validate that we are really at a CLI prompt.
+
+        Some systems print a prompt immediately.
+        Others need one newline before they show it.
+        """
+        prompts = compile_prompt_patterns(self.config.expected_prompts)
+        if not prompts:
+            raise ConnectionOpenError(
+                f"No expected_prompts configured for device={self.device_id!r}"
+            )
+
+        start_pos = len(self._buffer)
+
+        try:
+            prompt = await self._wait_for_patterns(
+                patterns=prompts,
+                timeout=self.config.prompt_timeout,
+                start_pos=start_pos,
+            )
+            self._last_prompt = prompt
+            LOGGER.info(
+                "Initial prompt validated for device=%s prompt=%r",
+                self.device_id,
+                prompt,
+            )
+            return
+        except PromptTimeoutError:
+            LOGGER.info(
+                "Initial prompt not seen immediately for device=%s. Sending newline.",
+                self.device_id,
+            )
+
+        # Some shells only render a prompt after Enter.
+        start_pos = len(self._buffer)
+        await self._send_raw("\n")
+
+        try:
+            prompt = await self._wait_for_patterns(
+                patterns=prompts,
+                timeout=self.config.prompt_timeout,
+                start_pos=start_pos,
+            )
+            self._last_prompt = prompt
+            LOGGER.info(
+                "Initial prompt validated after newline for device=%s prompt=%r",
+                self.device_id,
+                prompt,
+            )
+        except PromptTimeoutError as exc:
+            await self.close()
+            raise ConnectionOpenError(
+                f"SSH connected but no expected prompt was detected for "
+                f"device={self.device_id!r}. "
+                f"Expected prompts={self.config.expected_prompts!r}"
+            ) from exc
 
     def _open_blocking(self) -> None:
         LOGGER.info(
