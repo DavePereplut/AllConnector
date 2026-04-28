@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import posixpath
 import threading
 import time
+from pathlib import Path
 
 import paramiko
 
@@ -12,6 +14,8 @@ from framework.connections.exceptions import (
     AuthenticationError,
     ConnectionClosedError,
     ConnectionOpenError,
+    FileTransferError,
+    FileVerificationError,
     HostKeyError,
     PromptTimeoutError,
 )
@@ -34,20 +38,12 @@ class SSHConnection(BaseConnection):
         self._closed = False
         self._loop = asyncio.get_running_loop()
 
-        # Establish blocking SSH transport + shell
         await asyncio.to_thread(self._open_blocking)
         self._connected = True
 
-        # Validate that the shell is actually ready and sitting at a prompt.
         await self._validate_initial_prompt()
 
     async def _validate_initial_prompt(self) -> None:
-        """
-        After invoke_shell(), validate that we are really at a CLI prompt.
-
-        Some systems print a prompt immediately.
-        Others need one newline before they show it.
-        """
         prompts = compile_prompt_patterns(self.config.expected_prompts)
         if not prompts:
             raise ConnectionOpenError(
@@ -75,7 +71,6 @@ class SSHConnection(BaseConnection):
                 self.device_id,
             )
 
-        # Some shells only render a prompt after Enter.
         start_pos = len(self._buffer)
         await self._send_raw("\n")
 
@@ -269,3 +264,174 @@ class SSHConnection(BaseConnection):
             raise ConnectionClosedError(
                 f"Failed to send data for device={self.device_id!r}"
             ) from exc
+
+    async def upload_file(
+        self,
+        local_path: str | Path,
+        remote_path: str,
+        *,
+        create_remote_dirs: bool = False,
+        overwrite: bool = True,
+        verify_size: bool = True,
+    ) -> None:
+        await self.ensure_connected()
+        await asyncio.to_thread(
+            self._upload_file_blocking,
+            Path(local_path),
+            remote_path,
+            create_remote_dirs,
+            overwrite,
+            verify_size,
+        )
+
+    async def download_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        create_local_dirs: bool = False,
+        overwrite: bool = True,
+        verify_size: bool = True,
+    ) -> None:
+        await self.ensure_connected()
+        await asyncio.to_thread(
+            self._download_file_blocking,
+            remote_path,
+            Path(local_path),
+            create_local_dirs,
+            overwrite,
+            verify_size,
+        )
+
+    def _open_sftp_blocking(self) -> paramiko.SFTPClient:
+        if self._client is None or not self.is_alive():
+            raise ConnectionClosedError(
+                f"SSH client is not alive for device={self.device_id!r}"
+            )
+        try:
+            return self._client.open_sftp()
+        except Exception as exc:  # noqa: BLE001
+            raise FileTransferError(
+                f"Failed to open SFTP session for device={self.device_id!r}"
+            ) from exc
+
+    def _mkdir_p_remote_blocking(self, sftp: paramiko.SFTPClient, remote_dir: str) -> None:
+        if not remote_dir:
+            return
+
+        parts = []
+        current = remote_dir
+        while current not in ("", "/"):
+            parts.append(current)
+            current = posixpath.dirname(current)
+
+        if remote_dir.startswith("/"):
+            parts.append("/")
+
+        for path in reversed(parts):
+            try:
+                sftp.stat(path)
+            except IOError:
+                if path == "/":
+                    continue
+                sftp.mkdir(path)
+
+    def _upload_file_blocking(
+        self,
+        local_path: Path,
+        remote_path: str,
+        create_remote_dirs: bool,
+        overwrite: bool,
+        verify_size: bool,
+    ) -> None:
+        if not local_path.exists():
+            raise FileTransferError(f"Local file does not exist: {local_path}")
+
+        if not local_path.is_file():
+            raise FileTransferError(f"Local path is not a file: {local_path}")
+
+        with self._open_sftp_blocking() as sftp:
+            remote_dir = posixpath.dirname(remote_path)
+            if create_remote_dirs and remote_dir:
+                self._mkdir_p_remote_blocking(sftp, remote_dir)
+
+            if not overwrite:
+                try:
+                    sftp.stat(remote_path)
+                    raise FileTransferError(
+                        f"Remote file already exists and overwrite=False: {remote_path}"
+                    )
+                except IOError:
+                    pass
+
+            try:
+                sftp.put(str(local_path), remote_path)
+            except Exception as exc:  # noqa: BLE001
+                raise FileTransferError(
+                    f"Failed to upload file to {remote_path!r} for device={self.device_id!r}"
+                ) from exc
+
+            if verify_size:
+                local_size = local_path.stat().st_size
+                remote_size = sftp.stat(remote_path).st_size
+                if local_size != remote_size:
+                    raise FileVerificationError(
+                        f"Upload verification failed for device={self.device_id!r}: "
+                        f"local_size={local_size}, remote_size={remote_size}, "
+                        f"remote_path={remote_path!r}"
+                    )
+
+        LOGGER.info(
+            "Uploaded file for device=%s local=%s remote=%s",
+            self.device_id,
+            local_path,
+            remote_path,
+        )
+
+    def _download_file_blocking(
+        self,
+        remote_path: str,
+        local_path: Path,
+        create_local_dirs: bool,
+        overwrite: bool,
+        verify_size: bool,
+    ) -> None:
+        if local_path.exists() and not overwrite:
+            raise FileTransferError(
+                f"Local file already exists and overwrite=False: {local_path}"
+            )
+
+        if create_local_dirs:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with self._open_sftp_blocking() as sftp:
+            try:
+                remote_stat = sftp.stat(remote_path)
+            except Exception as exc:  # noqa: BLE001
+                raise FileTransferError(
+                    f"Remote file does not exist or cannot be accessed: {remote_path!r}"
+                ) from exc
+
+            try:
+                sftp.get(remote_path, str(local_path))
+            except Exception as exc:  # noqa: BLE001
+                raise FileTransferError(
+                    f"Failed to download file from {remote_path!r} for device={self.device_id!r}"
+                ) from exc
+
+            if verify_size:
+                local_size = local_path.stat().st_size
+                remote_size = remote_stat.st_size
+                if local_size != remote_size:
+                    raise FileVerificationError(
+                        f"Download verification failed for device={self.device_id!r}: "
+                        f"remote_size={remote_size}, local_size={local_size}, "
+                        f"remote_path={remote_path!r}, local_path={str(local_path)!r}"
+                    )
+
+        LOGGER.info(
+            "Downloaded file for device=%s remote=%s local=%s",
+            self.device_id,
+            remote_path,
+            local_path,
+        )

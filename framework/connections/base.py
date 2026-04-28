@@ -4,6 +4,7 @@ import abc
 import asyncio
 import contextlib
 import re
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, Pattern, Sequence
 
@@ -80,6 +81,30 @@ class BaseConnection(abc.ABC):
 
     @abc.abstractmethod
     async def _send_raw(self, data: str) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def upload_file(
+        self,
+        local_path: str | Path,
+        remote_path: str,
+        *,
+        create_remote_dirs: bool = False,
+        overwrite: bool = True,
+        verify_size: bool = True,
+    ) -> None:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def download_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        create_local_dirs: bool = False,
+        overwrite: bool = True,
+        verify_size: bool = True,
+    ) -> None:
         raise NotImplementedError
 
     async def ensure_connected(self) -> None:

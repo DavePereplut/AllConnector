@@ -55,3 +55,11 @@ class EventWaitTimeoutError(FrameworkError):
 
 class InteractiveFlowError(FrameworkError):
     """Raised when an interactive dialogue fails."""
+
+
+class FileTransferError(FrameworkError):
+    """Raised when file transfer fails."""
+
+
+class FileVerificationError(FileTransferError):
+    """Raised when transferred file verification fails."""

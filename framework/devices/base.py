@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+from pathlib import Path
 from typing import Any
 
 from framework.commands.base import Command
@@ -23,5 +24,36 @@ class BaseDevice(abc.ABC):
     async def run_parsed(self, command: Command) -> dict[str, Any]:
         return await self.conn.run_parsed(command)
 
-    async def login_as_root(self):
-        raise NotImplemented("Base device should not be used")
+    async def upload_file(
+        self,
+        local_path: str | Path,
+        remote_path: str,
+        *,
+        create_remote_dirs: bool = False,
+        overwrite: bool = True,
+        verify_size: bool = True,
+    ) -> None:
+        await self.conn.upload_file(
+            local_path,
+            remote_path,
+            create_remote_dirs=create_remote_dirs,
+            overwrite=overwrite,
+            verify_size=verify_size,
+        )
+
+    async def download_file(
+        self,
+        remote_path: str,
+        local_path: str | Path,
+        *,
+        create_local_dirs: bool = False,
+        overwrite: bool = True,
+        verify_size: bool = True,
+    ) -> None:
+        await self.conn.download_file(
+            remote_path,
+            local_path,
+            create_local_dirs=create_local_dirs,
+            overwrite=overwrite,
+            verify_size=verify_size,
+        )
