@@ -1,0 +1,14 @@
+name: remote_ls_check
+
+steps:
+  - name: prepare_remote_directory
+    action: prepare_remote_directory
+
+  - name: upload_benchmark_files
+    action: upload_benchmark_files
+
+  - name: list_remote_directory
+    action: run_ls_ltr
+
+  - name: verify_benchmark_files_exist
+    action: verify_remote_files_exist

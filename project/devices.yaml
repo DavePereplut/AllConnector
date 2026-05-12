@@ -1,0 +1,28 @@
+devices:
+  linux_1:
+    device_id: linux_1
+    class_name: LinuxDevice
+    ssh:
+      host: 192.168.1.50
+      port: 22
+      username: tester
+      password: secret
+      timeout: 10.0
+      keepalive_interval: 30
+      host_key_policy: warning
+      expected_prompts:
+        - '(?m)^[^\n\r]+[$#]\s*$'
+
+  linux_2:
+    device_id: linux_2
+    class_name: LinuxDevice
+    ssh:
+      host: 192.168.1.51
+      port: 22
+      username: tester
+      password: secret
+      timeout: 10.0
+      keepalive_interval: 30
+      host_key_policy: warning
+      expected_prompts:
+        - '(?m)^[^\n\r]+[$#]\s*$'

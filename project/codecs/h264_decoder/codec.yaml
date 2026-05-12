@@ -1,0 +1,4 @@
+name: h264_decoder
+
+benchmark_files:
+  - benchmarks/sample_720p.bitstream

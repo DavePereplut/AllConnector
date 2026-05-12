@@ -1,0 +1,16 @@
+name: nightly_remote_codec_check
+
+devices:
+  - linux_1
+  - linux_2
+
+codecs_dir: codecs
+
+scenario: scenarios/remote_ls_check.yaml
+
+remote:
+  root_dir: /tmp/codec_benchmarks
+  cleanup_after_test: true
+
+reports:
+  log_archive_dir: reports/remote-codec-logs

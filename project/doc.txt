@@ -1,0 +1,65 @@
+pytest \
+  --setup test_setup.yaml \
+  --devices devices.yaml \
+  --junitxml reports/junit-codecs.xml \
+  --html reports/codec-report.html
+
+
+
+pipeline {
+    agent any
+
+    stages {
+        stage('Install') {
+            steps {
+                sh '''
+                    python3.10 -m venv .venv
+                    . .venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+
+        stage('Run remote codec tests') {
+            steps {
+                sh '''
+                    . .venv/bin/activate
+
+                    rm -rf reports
+                    mkdir -p reports/remote-codec-logs
+
+                    pytest \
+                      --setup test_setup.yaml \
+                      --devices devices.yaml \
+                      --junitxml reports/junit-codecs.xml \
+                      --html reports/codec-report.html
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: true, testResults: 'reports/junit-codecs.xml'
+
+            archiveArtifacts(
+                artifacts: 'reports/codec-report.html',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+
+            archiveArtifacts(
+                artifacts: 'reports/junit-codecs.xml',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+
+            archiveArtifacts(
+                artifacts: 'reports/remote-codec-logs/**/*',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+        }
+    }
+}
